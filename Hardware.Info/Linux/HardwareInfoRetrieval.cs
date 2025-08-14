@@ -1,13 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Net.NetworkInformation;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.Globalization;
-using System.Net.Sockets;
 
 // https://www.binarytides.com/linux-commands-hardware-info/
 
@@ -146,34 +145,99 @@ namespace Hardware.Info.Linux
             return biosList;
         }
 
-        public List<CPU> GetCpuList(bool includePercentProcessorTime = true)
+        public List<ComputerSystem> GetComputerSystemList()
         {
-            List<CPU> cpuList = new List<CPU>();
+            List<ComputerSystem> computerSystemList = new List<ComputerSystem>();
 
+            ComputerSystem computerSystem = new ComputerSystem
+            {
+                Caption = TryReadTextFromFile("/sys/class/dmi/id/product_name"),
+                Description = TryReadTextFromFile("/sys/class/dmi/id/product_family"),
+                IdentifyingNumber = TryReadTextFromFile("/sys/class/dmi/id/product_serial"),
+                Name = TryReadTextFromFile("/sys/class/dmi/id/product_name"),
+                SKUNumber = TryReadTextFromFile("/sys/class/dmi/id/product_sku"),
+                UUID = TryReadTextFromFile("/sys/class/dmi/id/product_uuid"),
+                Vendor = TryReadTextFromFile("/sys/class/dmi/id/sys_vendor"),
+                Version = TryReadTextFromFile("/sys/class/dmi/id/product_version")
+            };
+
+            computerSystemList.Add(computerSystem);
+
+            return computerSystemList;
+        }
+
+        private class Processor
+        {
+            public string ProcessorId = string.Empty;
+            public string VendorId = string.Empty;
+            public string ModelName = string.Empty;
+            public uint CpuMhz;
+            public uint CacheSize;
+            public uint PhysicalId;
+            public uint Siblings;
+            public uint CoreId;
+            public uint CpuCores;
+
+            public uint L1DataCacheSize;
+            public uint L1InstructionCacheSize;
+            public uint L2CacheSize;
+            public uint L3CacheSize;
+
+            public ulong PercentProcessorTime;
+        }
+
+        public List<CPU> GetCpuList(bool includePercentProcessorTime = true, int millisecondsDelayBetweenTwoMeasurements = 500, bool includePerformanceCounter = true)
+        {
             string[] lines = TryReadLinesFromFile("/proc/cpuinfo");
 
+            Regex processorRegex = new Regex(@"^processor\s+:\s+(\d+)"); // processor ID (from 0 to 7 in a PC with two quad core CPUs)
             Regex vendorIdRegex = new Regex(@"^vendor_id\s+:\s+(.+)");
             Regex modelNameRegex = new Regex(@"^model name\s+:\s+(.+)");
             Regex cpuSpeedRegex = new Regex(@"^cpu MHz\s+:\s+(.+)");
-            Regex cacheSizeRegex = new Regex(@"^cache size\s+:\s+(.+)\s+KB");
-            Regex physicalCoresRegex = new Regex(@"^cpu cores\s+:\s+(.+)");
-            Regex logicalCoresRegex = new Regex(@"^siblings\s+:\s+(.+)");
+            Regex cacheSizeRegex = new Regex(@"^cache size\s+:\s+(.+)\s+KB"); // L2 cache size in KB
+            Regex physicalIdRegex = new Regex(@"^physical id\s+:\s+(\d+)"); // physical CPU ID (a PC with two quad core CPUs, 4 cores will have one value, and the other 4 will have another value)
+            Regex logicalCoresRegex = new Regex(@"^siblings\s+:\s+(.+)"); // number of logical cores (no hyperthreading = same as physical, with hyperthreading = 2 * physical)
+            Regex coreIdRegex = new Regex(@"^core id\s+:\s+(.+)"); // core ID (from 0 to 3 in a PC with two quad core CPUs - for the first CPU, and then the same for second CPU)
+            Regex physicalCoresRegex = new Regex(@"^cpu cores\s+:\s+(.+)"); // number of cores (in a quad core CPU = 4)
 
-            CPU cpu = new CPU();
+            List<Processor> processorList = new List<Processor>();
+
+            Processor processor = null!;
 
             foreach (string line in lines)
             {
-                Match match = vendorIdRegex.Match(line);
+                Match match = processorRegex.Match(line);
                 if (match.Success && match.Groups.Count > 1)
                 {
-                    cpu.Manufacturer = match.Groups[1].Value.Trim();
+                    processor = new Processor();
+
+                    if (uint.TryParse(match.Groups[1].Value, out uint processorId))
+                    {
+                        processor.ProcessorId = $"cpu{processorId}";
+
+                        GetCpuCacheSize(processor);
+
+                        processorList.Add(processor);
+                    }
+                    continue;
+                }
+
+                if (processor == null)
+                {
+                    continue;
+                }
+
+                match = vendorIdRegex.Match(line);
+                if (match.Success && match.Groups.Count > 1)
+                {
+                    processor.VendorId = match.Groups[1].Value.Trim();
                     continue;
                 }
 
                 match = modelNameRegex.Match(line);
                 if (match.Success && match.Groups.Count > 1)
                 {
-                    cpu.Name = match.Groups[1].Value.Trim();
+                    processor.ModelName = match.Groups[1].Value.Trim();
                     continue;
                 }
 
@@ -181,7 +245,7 @@ namespace Hardware.Info.Linux
                 if (match.Success && match.Groups.Count > 1)
                 {
                     if (double.TryParse(match.Groups[1].Value, out double currentClockSpeed))
-                        cpu.CurrentClockSpeed = (uint)currentClockSpeed;
+                        processor.CpuMhz = (uint)currentClockSpeed;
                     continue;
                 }
 
@@ -189,15 +253,15 @@ namespace Hardware.Info.Linux
                 if (match.Success && match.Groups.Count > 1)
                 {
                     if (uint.TryParse(match.Groups[1].Value, out uint cacheSize))
-                        cpu.L3CacheSize = 1024 * cacheSize;
+                        processor.CacheSize = 1024 * cacheSize;
                     continue;
                 }
 
-                match = physicalCoresRegex.Match(line);
+                match = physicalIdRegex.Match(line);
                 if (match.Success && match.Groups.Count > 1)
                 {
-                    if (uint.TryParse(match.Groups[1].Value, out uint numberOfCores))
-                        cpu.NumberOfCores = numberOfCores;
+                    if (uint.TryParse(match.Groups[1].Value, out uint physicalId))
+                        processor.PhysicalId = physicalId;
                     continue;
                 }
 
@@ -205,16 +269,82 @@ namespace Hardware.Info.Linux
                 if (match.Success && match.Groups.Count > 1)
                 {
                     if (uint.TryParse(match.Groups[1].Value, out uint numberOfLogicalProcessors))
-                        cpu.NumberOfLogicalProcessors = numberOfLogicalProcessors;
+                        processor.Siblings = numberOfLogicalProcessors;
+                    continue;
+                }
+
+                match = coreIdRegex.Match(line);
+                if (match.Success && match.Groups.Count > 1)
+                {
+                    if (uint.TryParse(match.Groups[1].Value, out uint coreId))
+                        processor.CoreId = coreId;
+                    continue;
+                }
+
+                match = physicalCoresRegex.Match(line);
+                if (match.Success && match.Groups.Count > 1)
+                {
+                    if (uint.TryParse(match.Groups[1].Value, out uint numberOfCores))
+                        processor.CpuCores = numberOfCores;
                     continue;
                 }
             }
 
+            ulong percentProcessorTime = 0;
+
+            if (includePercentProcessorTime)
+            {
+                percentProcessorTime = GetCpuUsage(processorList, millisecondsDelayBetweenTwoMeasurements);
+            }
+
+            List<CPU> cpuList = new List<CPU>();
+
+            foreach (var group in processorList.GroupBy(processor => processor.PhysicalId))
+            {
+                Processor first = group.First();
+
+                CPU cpu = new CPU
+                {
+                    PercentProcessorTime = percentProcessorTime,
+                    ProcessorId = group.Key.ToString(),
+                    Manufacturer = first.VendorId,
+                    Name = first.ModelName,
+                    CurrentClockSpeed = first.CpuMhz,
+                    NumberOfLogicalProcessors = first.Siblings,
+                    NumberOfCores = first.CpuCores,
+                    L1DataCacheSize = first.L1DataCacheSize,
+                    L1InstructionCacheSize = first.L1InstructionCacheSize,
+                    L2CacheSize = first.L2CacheSize,
+                    L3CacheSize = first.L3CacheSize
+                };
+
+                if (cpu.L2CacheSize == 0)
+                    cpu.L2CacheSize = first.CacheSize;
+
+                foreach (Processor proc in group)
+                {
+                    CpuCore core = new CpuCore
+                    {
+                        Name = proc.ProcessorId,
+                        PercentProcessorTime = proc.PercentProcessorTime
+                    };
+
+                    cpu.CpuCoreList.Add(core);
+                }
+
+                cpuList.Add(cpu);
+            }
+
+            return cpuList;
+        }
+
+        private static void GetCpuCacheSize(Processor processor)
+        {
             for (int i = 0; i <= 3; i++)
             {
-                string level = TryReadTextFromFile($"/sys/devices/system/cpu/cpu0/cache/index{i}/level");
-                string type = TryReadTextFromFile($"/sys/devices/system/cpu/cpu0/cache/index{i}/type");
-                string size = TryReadTextFromFile($"/sys/devices/system/cpu/cpu0/cache/index{i}/size");
+                string level = TryReadTextFromFile($"/sys/devices/system/cpu/{processor.ProcessorId}/cache/index{i}/level");
+                string type = TryReadTextFromFile($"/sys/devices/system/cpu/{processor.ProcessorId}/cache/index{i}/type");
+                string size = TryReadTextFromFile($"/sys/devices/system/cpu/{processor.ProcessorId}/cache/index{i}/size");
 
                 if (uint.TryParse(size.TrimEnd('K'), out uint cacheSize))
                 {
@@ -223,31 +353,22 @@ namespace Hardware.Info.Linux
                     if (level == "1")
                     {
                         if (type == "Data")
-                            cpu.L1DataCacheSize = cacheSize;
+                            processor.L1DataCacheSize = cacheSize;
 
                         if (type == "Instruction")
-                            cpu.L1InstructionCacheSize = cacheSize;
+                            processor.L1InstructionCacheSize = cacheSize;
                     }
 
                     if (level == "2")
-                        cpu.L2CacheSize = cacheSize;
+                        processor.L2CacheSize = cacheSize;
 
                     if (level == "3")
-                        cpu.L3CacheSize = cacheSize;
+                        processor.L3CacheSize = cacheSize;
                 }
             }
-
-            if (includePercentProcessorTime)
-            {
-                GetCpuUsage(cpu);
-            }
-
-            cpuList.Add(cpu);
-
-            return cpuList;
         }
 
-        private static void GetCpuUsage(CPU cpu)
+        private static ulong GetCpuUsage(List<Processor> processorList, int millisecondsDelayBetweenTwoMeasurements)
         {
             // Column   Name    Description
             // 1        user    Time spent with normal processing in user mode.
@@ -268,30 +389,28 @@ namespace Hardware.Info.Linux
             // ... 
 
             string[] cpuUsageLineLast = TryReadLinesFromFile("/proc/stat");
-            Task.Delay(500).Wait();
+            Task.Delay(millisecondsDelayBetweenTwoMeasurements).Wait();
             string[] cpuUsageLineNow = TryReadLinesFromFile("/proc/stat");
+
+            ulong percentProcessorTime = 0;
 
             if (cpuUsageLineLast.Length > 0 && cpuUsageLineNow.Length > 0)
             {
-                cpu.PercentProcessorTime = GetCpuPercentage(cpuUsageLineLast[0], cpuUsageLineNow[0]);
+                percentProcessorTime = GetCpuPercentage(cpuUsageLineLast[0], cpuUsageLineNow[0]);
 
-                for (int i = 0; i < cpu.NumberOfLogicalProcessors; i++)
+                foreach (Processor processor in processorList)
                 {
-                    string? cpuStatLast = cpuUsageLineLast.FirstOrDefault(s => s.StartsWith($"cpu{i}"));
-                    string? cpuStatNow = cpuUsageLineNow.FirstOrDefault(s => s.StartsWith($"cpu{i}"));
+                    string? cpuStatLast = cpuUsageLineLast.FirstOrDefault(s => s.StartsWith(processor.ProcessorId));
+                    string? cpuStatNow = cpuUsageLineNow.FirstOrDefault(s => s.StartsWith(processor.ProcessorId));
 
                     if (!string.IsNullOrEmpty(cpuStatLast) && !string.IsNullOrEmpty(cpuStatNow))
                     {
-                        CpuCore core = new CpuCore
-                        {
-                            Name = i.ToString(),
-                            PercentProcessorTime = GetCpuPercentage(cpuStatLast, cpuStatNow)
-                        };
-
-                        cpu.CpuCoreList.Add(core);
+                        processor.PercentProcessorTime = GetCpuPercentage(cpuStatLast, cpuStatNow);
                     }
                 }
             }
+
+            return percentProcessorTime;
         }
 
         private static UInt64 GetCpuPercentage(string cpuStatLast, string cpuStatNow)
@@ -325,6 +444,11 @@ namespace Hardware.Info.Linux
             // Get the delta between two reads 
             ulong cpuDelta = cpuSumNow - cpuSumLast;
 
+            if (cpuDelta == 0)
+            {
+                return 0; // avoid System.DivideByZeroException: Attempted to divide by zero.
+            }
+
             // Get the idle time Delta 
             ulong cpuIdle = 0;
 
@@ -344,7 +468,7 @@ namespace Hardware.Info.Linux
 
         public override List<Drive> GetDriveList()
         {
-            List<Drive> driveList = new List<Drive>();
+            List<Drive> driveList = base.GetDriveList();
 
             string processOutput = ReadProcessOutput("lshw", "-class disk");
 
@@ -356,19 +480,18 @@ namespace Hardware.Info.Linux
             {
                 string trimmed = line.Trim();
 
-                if (trimmed.StartsWith("*-"))
+                if (trimmed.StartsWith("*-cdrom") || trimmed.StartsWith("*-disk"))
                 {
-                    if (disk != null)
+                    if(driveList.Count > 0 && disk == null && trimmed.StartsWith("*-disk"))
                     {
+                        disk = driveList.First();
+                    }
+                    else
+                    {
+                        disk = new Drive();
                         driveList.Add(disk);
                     }
 
-                    disk = null;
-                }
-
-                if (trimmed.StartsWith("*-cdrom") || trimmed.StartsWith("*-disk"))
-                {
-                    disk = new Drive();
                     continue;
                 }
 
@@ -382,15 +505,54 @@ namespace Hardware.Info.Linux
                     {
                         disk.Manufacturer = trimmed.Replace("vendor:", string.Empty).Trim();
                     }
+                    else if (trimmed.StartsWith("description:"))
+                    {
+                        disk.Description = trimmed.Replace("description:", string.Empty).Trim();
+                    }
+                    else if (trimmed.StartsWith("version:"))
+                    {
+                        disk.FirmwareRevision = trimmed.Replace("version:", string.Empty).Trim();
+                    }
+                    else if (trimmed.StartsWith("logical name:"))
+                    {
+                        disk.Name = trimmed.Replace("logical name:", string.Empty).Trim();
+                    }
+                    else if (trimmed.StartsWith("serial:"))
+                    {
+                        disk.SerialNumber = trimmed.Replace("serial:", string.Empty).Trim();
+                    }
+                    else if (trimmed.StartsWith("size:"))
+                    {
+                        string size = trimmed.Replace("size:", string.Empty).Trim();
+                        disk.Size = ExtractSizeInBytes(size);
+                    }
                 }
             }
 
-            if (disk != null)
-            {
-                driveList.Add(disk);
-            }
-
             return driveList;
+
+            static ulong ExtractSizeInBytes(string input)
+            {
+                Regex regex = new Regex(@"(\d+)\s*(KB|MB|GB|TB)");
+                Match match = regex.Match(input);
+
+                if (match.Success)
+                {
+                    if (ulong.TryParse(match.Groups[1].Value, out ulong size))
+                    {
+                        return match.Groups[2].Value switch
+                        {
+                            "KB" => size * 1024UL,
+                            "MB" => size * 1024UL * 1024UL,
+                            "GB" => size * 1024UL * 1024UL * 1024UL,
+                            "TB" => size * 1024UL * 1024UL * 1024UL * 1024UL,
+                            _ => size,
+                        };
+                    }
+                }
+
+                return 0;
+            }
         }
 
         public List<Keyboard> GetKeyboardList()
@@ -660,7 +822,7 @@ namespace Hardware.Info.Linux
                     Caption = interfaceName,
                     Description = interfaceName,
                     Name = interfaceName,
-                    MACAddress = macAddress,
+                    MACAddress = macAddress.Replace(":", "").ToUpper(),
                     NetConnectionID = interfaceName,
                     ProductName = interfaceName,
                 };
@@ -753,25 +915,16 @@ namespace Hardware.Info.Linux
             return foundIp;
         }
 
-        public override List<NetworkAdapter> GetNetworkAdapterList(bool includeBytesPersec = true, bool includeNetworkAdapterConfiguration = true)
+        public override List<NetworkAdapter> GetNetworkAdapterList(bool includeBytesPersec = true, bool includeNetworkAdapterConfiguration = true, int millisecondsDelayBetweenTwoMeasurements = 1000)
         {
-            List<NetworkAdapter> networkAdapterList;
-
-            try
-            {
-                networkAdapterList = base.GetNetworkAdapterList(includeBytesPersec, includeNetworkAdapterConfiguration);
-            }
-            catch (NetworkInformationException)
-            {
-                networkAdapterList = GetNetworkAdapters();
-            }
+            List<NetworkAdapter> networkAdapterList = GetNetworkAdapters();
 
             if (includeBytesPersec)
             {
                 char[] charSeparators = new char[] { ' ' };
 
                 string[] procNetDevLast = TryReadLinesFromFile("/proc/net/dev");
-                Task.Delay(1000).Wait();
+                Task.Delay(millisecondsDelayBetweenTwoMeasurements).Wait();
                 string[] procNetDevNow = TryReadLinesFromFile("/proc/net/dev");
 
                 foreach (NetworkAdapter networkAdapter in networkAdapterList)
@@ -1025,7 +1178,7 @@ namespace Hardware.Info.Linux
 
             lines = processOutput.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries);
 
-            foreach (string line in lines.Where(l => l.Contains("VGA compatible controller")))
+            foreach (string line in lines.Where(l => l.Contains("VGA compatible controller") || l.Contains("3D controller") || l.Contains("Display controller")))
             {
                 string[] split = line.Split(':');
 
