@@ -67,6 +67,21 @@ namespace Hardware.Info
             return 0;
         }
 
+        internal static ulong TryReadLongFromFile(params string[] possiblePaths)
+        {
+            foreach (string path in possiblePaths)
+            {
+                string text = TryReadTextFromFile(path);
+
+                if (ulong.TryParse(text, out ulong integer))
+                {
+                    return integer;
+                }
+            }
+
+            return 0;
+        }
+
         internal static string[] TryReadLinesFromFile(string path)
         {
             try
@@ -89,18 +104,24 @@ namespace Hardware.Info
 
             foreach (DriveInfo driveInfo in DriveInfo.GetDrives())
             {
-                Volume volume = new Volume
+                try
                 {
-                    FileSystem = driveInfo.DriveFormat,
-                    Description = driveInfo.DriveType.ToString(),
-                    Name = driveInfo.Name,
-                    Caption = driveInfo.RootDirectory.FullName,
-                    FreeSpace = (ulong)driveInfo.TotalFreeSpace,
-                    Size = (ulong)driveInfo.TotalSize,
-                    VolumeName = driveInfo.VolumeLabel
-                };
+                    Volume volume = new Volume
+                    {
+                        FileSystem = driveInfo.DriveFormat,
+                        Description = driveInfo.DriveType.ToString(),
+                        Name = driveInfo.Name,
+                        Caption = driveInfo.RootDirectory.FullName,
+                        FreeSpace = (ulong)driveInfo.TotalFreeSpace,
+                        Size = (ulong)driveInfo.TotalSize,
+                        VolumeName = driveInfo.VolumeLabel
+                    };
 
-                partition.VolumeList.Add(volume);
+                    partition.VolumeList.Add(volume);
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
             }
 
             drive.PartitionList.Add(partition);
@@ -110,7 +131,7 @@ namespace Hardware.Info
             return driveList;
         }
 
-        public virtual List<NetworkAdapter> GetNetworkAdapterList(bool includeBytesPersec = true, bool includeNetworkAdapterConfiguration = true)
+        public virtual List<NetworkAdapter> GetNetworkAdapterList(bool includeBytesPersec = true, bool includeNetworkAdapterConfiguration = true, int millisecondsDelayBetweenTwoMeasurements = 1000)
         {
             List<NetworkAdapter> networkAdapterList = new List<NetworkAdapter>();
 

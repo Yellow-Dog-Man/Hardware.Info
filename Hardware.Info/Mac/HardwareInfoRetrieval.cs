@@ -327,6 +327,73 @@ Power:
         }
 
         /*
+        system_profiler SPHardwareDataType
+Hardware:
+
+    Hardware Overview:
+
+      Model Name: Mac mini
+      Model Identifier: Macmini9,1
+      Model Number: MGNR3ZE/A
+      Chip: Apple M1
+      Total Number of Cores: 8 (4 performance and 4 efficiency)
+      Memory: 8 GB
+      System Firmware Version: 10151.140.19
+      OS Loader Version: 10151.140.19
+      Serial Number (system): C07JG1XTQ6NV
+      Hardware UUID: A7C8F6C7-C339-5904-B220-CF4C3D22FB1B
+      Provisioning UDID: 00008103-001965521E60801E
+      Activation Lock Status: Enabled
+        */
+
+        public List<ComputerSystem> GetComputerSystemList()
+        {
+            List<ComputerSystem> computerSystemList = new List<ComputerSystem>();
+
+            ComputerSystem computerSystem = new ComputerSystem
+            {
+                Vendor = "Apple"
+            };
+
+            StartProcess("system_profiler", "SPHardwareDataType",
+                standardOutput =>
+                {
+                    string line = standardOutput.Trim();
+
+                    if (line.StartsWith("Model Name: "))
+                    {
+                        computerSystem.Caption = line.Replace("Model Name: ", string.Empty);
+                        computerSystem.Name = line.Replace("Model Name: ", string.Empty);
+                    }
+                    else if (line.StartsWith("Model Identifier: "))
+                    {
+                        computerSystem.Description = line.Replace("Model Identifier: ", string.Empty);
+                    }
+                    else if (line.StartsWith("Serial Number (system): "))
+                    {
+                        computerSystem.IdentifyingNumber = line.Replace("Serial Number (system): ", string.Empty);
+                    }
+                    else if (line.StartsWith("Model Number: "))
+                    {
+                        computerSystem.SKUNumber = line.Replace("Model Number: ", string.Empty);
+                    }
+                    else if (line.StartsWith("Hardware UUID: "))
+                    {
+                        computerSystem.UUID = line.Replace("Hardware UUID: ", string.Empty);
+                    }
+                    else if (line.StartsWith("System Firmware Version: "))
+                    {
+                        computerSystem.Version = line.Replace("System Firmware Version: ", string.Empty);
+                    }
+                },
+                standardError => { });
+
+            computerSystemList.Add(computerSystem);
+
+            return computerSystemList;
+        }
+
+        /*
         SPHardwareDataType
 Hardware:
 
@@ -346,58 +413,122 @@ Hardware:
       Hardware UUID: F6D9C340-725A-224A-8855-99AB8348F745
         /**/
 
-        public List<CPU> GetCpuList(bool includePercentProcessorTime = true)
+        public List<CPU> GetCpuList(bool includePercentProcessorTime = true, int millisecondsDelayBetweenTwoMeasurements = 500, bool includePerformanceCounter = true)
         {
             List<CPU> cpuList = new List<CPU>();
 
-            CPU cpu = new CPU();
+            string processOutput = ReadProcessOutput("sysctl", "-n hw.nperflevels");
 
-            string processOutput = ReadProcessOutput("sysctl", "-n machdep.cpu.brand_string");
+            if (uint.TryParse(processOutput, out uint levels) && levels > 1)
+            {
+                for (int i = 0; i < levels; i++)
+                {
+                    string perflevel = "perflevel" + i;
 
-            // Intel CPUs include the clock speed as part of the name
-            cpu.Name = processOutput.Split('@')[0].Trim();
+                    CPU cpu = new CPU();
 
-            processOutput = ReadProcessOutput("sysctl", "-n hw.cpufrequency_max");
+                    cpu.Caption = i.ToString();
+                    cpu.Description = perflevel;
 
-            if (uint.TryParse(processOutput, out uint maxFrequency))
-                cpu.MaxClockSpeed = maxFrequency / 1_000_000;
+                    processOutput = ReadProcessOutput("sysctl", "-n machdep.cpu.brand_string");
 
-            processOutput = ReadProcessOutput("sysctl", "-n hw.cpufrequency");
+                    // Intel CPUs include the clock speed as part of the name
+                    cpu.Name = processOutput.Split('@')[0].Trim();
 
-            if (uint.TryParse(processOutput, out uint frequency))
-                cpu.CurrentClockSpeed = frequency / 1_000_000;
-            
-            processOutput = ReadProcessOutput("sysctl", "-n hw.l1icachesize");
+                    processOutput = ReadProcessOutput("sysctl", "-n hw.cpufrequency_max");
 
-            if (uint.TryParse(processOutput, out uint L1InstructionCacheSize))
-                cpu.L1InstructionCacheSize = L1InstructionCacheSize;
+                    if (uint.TryParse(processOutput, out uint maxFrequency))
+                        cpu.MaxClockSpeed = maxFrequency / 1_000_000;
 
-            processOutput = ReadProcessOutput("sysctl", "-n hw.l1dcachesize");
+                    processOutput = ReadProcessOutput("sysctl", "-n hw.cpufrequency");
 
-            if (uint.TryParse(processOutput, out uint L1DataCacheSize))
-                cpu.L1DataCacheSize = L1DataCacheSize;
+                    if (uint.TryParse(processOutput, out uint frequency))
+                        cpu.CurrentClockSpeed = frequency / 1_000_000;
 
-            processOutput = ReadProcessOutput("sysctl", "-n hw.l2cachesize");
+                    processOutput = ReadProcessOutput("sysctl", $"-n hw.{perflevel}.l1icachesize");
 
-            if (uint.TryParse(processOutput, out uint L2CacheSize))
-                cpu.L2CacheSize = L2CacheSize;
+                    if (uint.TryParse(processOutput, out uint L1InstructionCacheSize))
+                        cpu.L1InstructionCacheSize = L1InstructionCacheSize;
 
-            processOutput = ReadProcessOutput("sysctl", "-n hw.l3cachesize");
+                    processOutput = ReadProcessOutput("sysctl", $"-n hw.{perflevel}.l1dcachesize");
 
-            if (uint.TryParse(processOutput, out uint L3CacheSize))
-                cpu.L3CacheSize = L3CacheSize;
+                    if (uint.TryParse(processOutput, out uint L1DataCacheSize))
+                        cpu.L1DataCacheSize = L1DataCacheSize;
 
-            processOutput = ReadProcessOutput("sysctl", "-n hw.physicalcpu");
+                    processOutput = ReadProcessOutput("sysctl", $"-n hw.{perflevel}.l2cachesize");
 
-            if (uint.TryParse(processOutput, out uint numberOfCores))
-                cpu.NumberOfCores = numberOfCores;
+                    if (uint.TryParse(processOutput, out uint L2CacheSize))
+                        cpu.L2CacheSize = L2CacheSize;
 
-            processOutput = ReadProcessOutput("sysctl", "-n hw.logicalcpu");
+                    processOutput = ReadProcessOutput("sysctl", $"-n hw.{perflevel}.l3cachesize");
 
-            if (uint.TryParse(processOutput, out uint numberOfLogicalProcessors))
-                cpu.NumberOfLogicalProcessors = numberOfLogicalProcessors;
+                    if (uint.TryParse(processOutput, out uint L3CacheSize))
+                        cpu.L3CacheSize = L3CacheSize;
 
-            cpuList.Add(cpu);
+                    processOutput = ReadProcessOutput("sysctl", $"-n hw.{perflevel}.physicalcpu");
+
+                    if (uint.TryParse(processOutput, out uint numberOfCores))
+                        cpu.NumberOfCores = numberOfCores;
+
+                    processOutput = ReadProcessOutput("sysctl", $"-n hw.{perflevel}.logicalcpu");
+
+                    if (uint.TryParse(processOutput, out uint numberOfLogicalProcessors))
+                        cpu.NumberOfLogicalProcessors = numberOfLogicalProcessors;
+
+                    cpuList.Add(cpu);
+                }
+            }
+            else
+            {
+                CPU cpu = new CPU();
+
+                processOutput = ReadProcessOutput("sysctl", "-n machdep.cpu.brand_string");
+
+                // Intel CPUs include the clock speed as part of the name
+                cpu.Name = processOutput.Split('@')[0].Trim();
+
+                processOutput = ReadProcessOutput("sysctl", "-n hw.cpufrequency_max");
+
+                if (uint.TryParse(processOutput, out uint maxFrequency))
+                    cpu.MaxClockSpeed = maxFrequency / 1_000_000;
+
+                processOutput = ReadProcessOutput("sysctl", "-n hw.cpufrequency");
+
+                if (uint.TryParse(processOutput, out uint frequency))
+                    cpu.CurrentClockSpeed = frequency / 1_000_000;
+
+                processOutput = ReadProcessOutput("sysctl", "-n hw.l1icachesize");
+
+                if (uint.TryParse(processOutput, out uint L1InstructionCacheSize))
+                    cpu.L1InstructionCacheSize = L1InstructionCacheSize;
+
+                processOutput = ReadProcessOutput("sysctl", "-n hw.l1dcachesize");
+
+                if (uint.TryParse(processOutput, out uint L1DataCacheSize))
+                    cpu.L1DataCacheSize = L1DataCacheSize;
+
+                processOutput = ReadProcessOutput("sysctl", "-n hw.l2cachesize");
+
+                if (uint.TryParse(processOutput, out uint L2CacheSize))
+                    cpu.L2CacheSize = L2CacheSize;
+
+                processOutput = ReadProcessOutput("sysctl", "-n hw.l3cachesize");
+
+                if (uint.TryParse(processOutput, out uint L3CacheSize))
+                    cpu.L3CacheSize = L3CacheSize;
+
+                processOutput = ReadProcessOutput("sysctl", "-n hw.physicalcpu");
+
+                if (uint.TryParse(processOutput, out uint numberOfCores))
+                    cpu.NumberOfCores = numberOfCores;
+
+                processOutput = ReadProcessOutput("sysctl", "-n hw.logicalcpu");
+
+                if (uint.TryParse(processOutput, out uint numberOfLogicalProcessors))
+                    cpu.NumberOfLogicalProcessors = numberOfLogicalProcessors;
+
+                cpuList.Add(cpu);
+            }
 
             return cpuList;
         }
@@ -420,7 +551,7 @@ SATA/SATA Express:
         VBOX HARDDISK:
 
           Capacity: 536,87 GB (536.870.912.000 bytes)
-          Model: VBOX HARDDISK                           
+          Model: VBOX HARDDISK
           Revision: 1,000000
           Serial Number: VBa308df62-62a2d2a0 
           Native Command Queuing: Yes
@@ -464,9 +595,9 @@ SATA/SATA Express:
 
         VBOX CD-ROM:
 
-          Model: VBOX CD-ROM                             
+          Model: VBOX CD-ROM
           Revision: 1,000000
-          Serial Number: VB1-1a2b3c4d        
+          Serial Number: VB1-1a2b3c4d
           Native Command Queuing: No
           Detachable Drive: No
           Power Off: No
@@ -871,7 +1002,7 @@ USB:
             return mouseList;
         }
 
-        public override List<NetworkAdapter> GetNetworkAdapterList(bool includeBytesPersec = true, bool includeNetworkAdapterConfiguration = true)
+        public override List<NetworkAdapter> GetNetworkAdapterList(bool includeBytesPersec = true, bool includeNetworkAdapterConfiguration = true, int millisecondsDelayBetweenTwoMeasurements = 1000)
         {
             /*
             SPNetworkDataType

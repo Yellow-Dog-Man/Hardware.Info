@@ -7,34 +7,44 @@ Battery, BIOS, CPU - processor, storage drive, keyboard, RAM - memory, monitor, 
 1. Include NuGet package from https://www.nuget.org/packages/Hardware.Info
 
         <ItemGroup>
-            <PackageReference Include="Hardware.Info" Version="11.1.0.0" />
+            <PackageReference Include="Hardware.Info" Version="101.0.1.1" />
         </ItemGroup>
 
 2. Call `RefreshAll()` or one of the other `Refresh*()` methods:
 
         class Program
         {
-            static readonly IHardwareInfo hardwareInfo = new HardwareInfo();
+            static IHardwareInfo hardwareInfo;
 
             static void Main(string[] _)
             {
-                //hardwareInfo.RefreshOperatingSystem();
-                //hardwareInfo.RefreshMemoryStatus();
-                //hardwareInfo.RefreshBatteryList();
-                //hardwareInfo.RefreshBIOSList();
-                //hardwareInfo.RefreshCPUList();
-                //hardwareInfo.RefreshDriveList();
-                //hardwareInfo.RefreshKeyboardList();
-                //hardwareInfo.RefreshMemoryList();
-                //hardwareInfo.RefreshMonitorList();
-                //hardwareInfo.RefreshMotherboardList();
-                //hardwareInfo.RefreshMouseList();
-                //hardwareInfo.RefreshNetworkAdapterList();
-                //hardwareInfo.RefreshPrinterList();
-                //hardwareInfo.RefreshSoundDeviceList();
-                //hardwareInfo.RefreshVideoControllerList();
+                try
+                {
+                    hardwareInfo = new HardwareInfo();
 
-                hardwareInfo.RefreshAll();
+                    //hardwareInfo.RefreshOperatingSystem();
+                    //hardwareInfo.RefreshMemoryStatus();
+                    //hardwareInfo.RefreshBatteryList();
+                    //hardwareInfo.RefreshBIOSList();
+                    //hardwareInfo.RefreshComputerSystemList();
+                    //hardwareInfo.RefreshCPUList();
+                    //hardwareInfo.RefreshDriveList();
+                    //hardwareInfo.RefreshKeyboardList();
+                    //hardwareInfo.RefreshMemoryList();
+                    //hardwareInfo.RefreshMonitorList();
+                    //hardwareInfo.RefreshMotherboardList();
+                    //hardwareInfo.RefreshMouseList();
+                    //hardwareInfo.RefreshNetworkAdapterList();
+                    //hardwareInfo.RefreshPrinterList();
+                    //hardwareInfo.RefreshSoundDeviceList();
+                    //hardwareInfo.RefreshVideoControllerList();
+
+                    hardwareInfo.RefreshAll();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine(ex);
+                }
 
                 Console.WriteLine(hardwareInfo.OperatingSystem);
 
@@ -46,6 +56,9 @@ Battery, BIOS, CPU - processor, storage drive, keyboard, RAM - memory, monitor, 
                 foreach (var hardware in hardwareInfo.BiosList)
                     Console.WriteLine(hardware);
 
+                foreach (var hardware in hardwareInfo.ComputerSystemList)
+                    Console.WriteLine(hardware);
+
                 foreach (var cpu in hardwareInfo.CpuList)
                 {
                     Console.WriteLine(cpu);
@@ -53,8 +66,6 @@ Battery, BIOS, CPU - processor, storage drive, keyboard, RAM - memory, monitor, 
                     foreach (var cpuCore in cpu.CpuCoreList)
                         Console.WriteLine(cpuCore);
                 }
-
-                Console.ReadLine();
 
                 foreach (var drive in hardwareInfo.DriveList)
                 {
@@ -68,8 +79,6 @@ Battery, BIOS, CPU - processor, storage drive, keyboard, RAM - memory, monitor, 
                             Console.WriteLine(volume);
                     }
                 }
-
-                Console.ReadLine();
 
                 foreach (var hardware in hardwareInfo.KeyboardList)
                     Console.WriteLine(hardware);
@@ -97,8 +106,6 @@ Battery, BIOS, CPU - processor, storage drive, keyboard, RAM - memory, monitor, 
 
                 foreach (var hardware in hardwareInfo.VideoControllerList)
                     Console.WriteLine(hardware);
-
-                Console.ReadLine();
 
                 foreach (var address in HardwareInfo.GetLocalIPv4Addresses(NetworkInterfaceType.Ethernet, OperationalStatus.Up))
                     Console.WriteLine(address);
@@ -136,26 +143,52 @@ You can avoid the 21 second delay by excluding the queries that cause it (see Se
 
 Sometimes `NetworkAdapter.Speed` in `Win32_NetworkAdapter` can be `0` or `long.MaxValue`. The correct value can be retrived from `CurrentBandwidth` in `Win32_PerfFormattedData_Tcpip_NetworkAdapter` but unfortunately reading from `Win32_PerfFormattedData_Tcpip_NetworkAdapter` causes a 21 second delay on the first read, like mentioned in the previous paragraph. Calling `RefreshNetworkAdapterList` with `includeBytesPersec = true` will also read the `CurrentBandwidth`.
 
+### `WmiNetUtilsHelper` will throw an exception in Windows if publish settings use `<PublishTrimmed>true</PublishTrimmed>`
+
+This is a known error: https://github.com/dotnet/core/issues/7051#issuecomment-1071484354
+
+### `PerformanceCounter` may crash msvcr80.dll with an invalid-parameter exception
+
+When using `PerformanceCounter` on a machine without the Visual C++ 2005 CRT installed, the native shim pulls in msvcr80.dll and may crash with an invalid-parameter exception (0xc000000d).
+
+To skip the usage of `PerformanceCounter` set `includePerformanceCounter` to `false` (see Settings).
+
 ## Settings
 
 ### Constructor settings:
 
 ```
-HardwareInfo(bool useAsteriskInWMI = true, TimeSpan? timeoutInWMI = null)
+HardwareInfo(TimeSpan? timeoutInWMI = null)
 ```
 
-The construcotr accepts two settings for WMI:
-- `useAsteriskInWMI` causes WMI queries to use `SELECT * FROM` instead of `SELECT` with a list of property names. This is slower, but safer, more compatible with older Windows (XP, Vista, 7, 8) where a certain WMI property might be missing and throw an exception when queried by name. The default value is `true`.
-- `timeoutInWMI` sets the `Timeout` property of the `EnumerationOptions` in the `ManagementObjectSearcher` that executes the query. The default value is `EnumerationOptions.InfiniteTimeout`. Changing this could cause the query to return empty results in certain cases.
+The construcotr accepts a setting for WMI:
+- `timeoutInWMI` sets the `Timeout` property of the `EnumerationOptions` in the `ManagementObjectSearcher` that executes each query. The default value is `EnumerationOptions.InfiniteTimeout`. There are one or more queries for each hardware component, so there are more than 16 queries executed on `RefreshAll()`. If a query reaches the timeout it will throw a `System.Management.ManagementException` exception where `ErrorCode` will be `System.Management.ManagementStatus.Timedout`. If you set the `timeoutInWMI` then use a `try-catch` block like this:
+
+        IHardwareInfo hardwareInfo;
+
+        try
+        {
+            hardwareInfo = new HardwareInfo(timeoutInWMI: TimeSpan.FromMilliseconds(100));
+
+            hardwareInfo.RefreshAll();
+        }
+        catch (ManagementException ex) when (ex.ErrorCode == ManagementStatus.Timedout)
+        {
+            Console.WriteLine(ex);
+        }
 
 ### Refresh methods settings:
 
-In these two methods you can exclude some slow queries by setting the parameters to `false`:
-
 ```
-RefreshCPUList(bool includePercentProcessorTime = true)
+RefreshCPUList(
+    bool includePercentProcessorTime = true, 
+    int millisecondsDelayBetweenTwoMeasurements = 500,
+    bool includePerformanceCounter = true)
 
-RefreshNetworkAdapterList(bool includeBytesPersec = true, bool includeNetworkAdapterConfiguration = true)
+RefreshNetworkAdapterList(
+    bool includeBytesPersec = true, 
+    bool includeNetworkAdapterConfiguration = true, 
+    int millisecondsDelayBetweenTwoMeasurements = 1000)
 ```
 
 Setting `includePercentProcessorTime` and `includeBytesPersec` to `false` will exclude the queries that:
@@ -163,6 +196,26 @@ Setting `includePercentProcessorTime` and `includeBytesPersec` to `false` will e
 - cause a 1 second delay every time they are called in Linux
 
 Setting `includeNetworkAdapterConfiguration` to `false` has only a small impact on performance.
+
+Delay in milliseconds between two measurements in Linux:
+
+For `PercentProcessorTime` in Linux:
+```
+string[] cpuUsageLineLast = TryReadLinesFromFile("/proc/stat");
+Task.Delay(millisecondsDelayBetweenTwoMeasurements).Wait();
+string[] cpuUsageLineNow = TryReadLinesFromFile("/proc/stat");
+```
+If `includePercentProcessorTime` is false, `millisecondsDelayBetweenTwoMeasurements` has no effect.
+
+For `BytesSentPersec` and `BytesReceivedPersec` in Linux:
+```
+string[] procNetDevLast = TryReadLinesFromFile("/proc/net/dev");
+Task.Delay(millisecondsDelayBetweenTwoMeasurements).Wait();
+string[] procNetDevNow = TryReadLinesFromFile("/proc/net/dev");
+```
+If `includeBytesPersec` is false, `millisecondsDelayBetweenTwoMeasurements` has no effect.
+
+Setting `includePerformanceCounter` to `false` excludes `PerformanceCounter` in Windows and avoids the exception in case Visual C++ 2005 CRT is not installed.
 
 ## Benchmarks
 
@@ -207,6 +260,45 @@ Setting `includeNetworkAdapterConfiguration` to `false` has only a small impact 
 
 ## Version history:
 
+- 101.0.1.1
+    - Fixed `GetCpuList` in Windows - by [@ilCosmico](https://github.com/ilCosmico)
+- 101.0.1.0
+    - Fixed `GetCpuList` in macOS - thanks to [@OudomMunint](https://github.com/OudomMunint)
+- 101.0.0.1
+    - Removed `UseAsteriskInWMI` in Windows - thanks to [@simonedd](https://github.com/simonedd)
+    - Fixed `GetMonitorList` in Windows - thanks to [@Agent-JY](https://github.com/Agent-JY)
+- 101.0.0.0
+    - Fixed `GetCpuList` in Linux - thanks to [@inelisoni](https://github.com/inelisoni)
+    - Added `int millisecondsDelayBetweenTwoMeasurements` to `GetCpuList`
+    - Added `int millisecondsDelayBetweenTwoMeasurements` to `GetNetworkAdapterList`
+- 100.1.1.1
+    - Fixed `GetNetworkAdapterList` in Linux - thanks to [@Pregath0r](https://github.com/Pregath0r)
+- 100.1.1.0
+    - Added `ComputerSystem` info in Windows, macOS, Linux - thanks to [@Zagrthos](https://github.com/Zagrthos)
+- 100.1.0.1
+    - Fixed `GetVideoControllerList` in Linux - thanks to [@NogginBops](https://github.com/NogginBops)
+- 100.1.0.0
+    - Fixed `GetDriveList` in Linux - thanks to [@GusanoGris](https://github.com/GusanoGris)
+    - Added `Microsoft.SourceLink.GitHub` - by [@andreas-eriksson](https://github.com/andreas-eriksson)
+- 100.0.1.1
+    - Added XML documentation - thanks to [@andreas-eriksson](https://github.com/andreas-eriksson)
+- 100.0.1.0
+    - Added `Disk.Description` in Linux
+    - Added `Disk.FirmwareRevision` in Linux
+    - Added `Disk.Name` in Linux
+    - Added `Disk.SerialNumber` in Linux
+    - Added `Disk.Size` in Linux
+- 100.0.0.1
+    - Added `HardwareInfo.snk` to sign the assembly with a strong name key
+- 100.0.0.0
+    - Fixed `GetCpuList` in Linux - thanks to [@inelisoni](https://github.com/inelisoni)
+- 11.1.1.1
+    - Fixed `GetMonitorList` in Windows - by [@Geevo](https://github.com/Geevo)
+- 11.1.1.0
+    - Fixed `GetMonitorList` in Windows - by [@Geevo](https://github.com/Geevo)
+- 11.1.0.1
+    - Fixed `GetNetworkAdapterList` in Linux - thanks to [@Nihlus](https://github.com/Nihlus)
+    - Fixed `GetCpuList` in Windows - by [@Frooxius](https://github.com/Frooxius)
 - 11.1.0.0
     - Fixed `NetworkAdapter.Speed` in Windows - by [@isenmann](https://github.com/isenmann)
 - 11.0.1.1

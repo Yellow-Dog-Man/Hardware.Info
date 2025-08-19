@@ -1,13 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Net.NetworkInformation;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.Globalization;
-using System.Net.Sockets;
 
 // https://www.binarytides.com/linux-commands-hardware-info/
 
@@ -94,9 +93,9 @@ namespace Hardware.Info.Linux
             // /sys/class/power_supply/BAT0/energy_now  = 22460000
             // /sys/class/power_supply/BAT0/capacity = 44                   // 44 % full        // 50610000 / 22460000 = 0,4437858130804189
             // /sys/class/power_supply/BAT0/capacity_level = Normal
-            // /sys/class/power_supply/BAT0/model_name = 
+            // /sys/class/power_supply/BAT0/model_name =
             // /sys/class/power_supply/BAT0/manufacturer = Sony Corp.
-            // /sys/class/power_supply/BAT0/serial_number = 
+            // /sys/class/power_supply/BAT0/serial_number =
 
             uint powerNow = TryReadIntegerFromFile("/sys/class/power_supply/BAT0/power_now", "/sys/class/power_supply/BAT0/voltage_now");
             uint designCapacity = TryReadIntegerFromFile("/sys/class/power_supply/BAT0/energy_full_design", "/sys/class/power_supply/BAT0/charge_full_design");
@@ -146,34 +145,99 @@ namespace Hardware.Info.Linux
             return biosList;
         }
 
-        public List<CPU> GetCpuList(bool includePercentProcessorTime = true)
+        public List<ComputerSystem> GetComputerSystemList()
         {
-            List<CPU> cpuList = new List<CPU>();
+            List<ComputerSystem> computerSystemList = new List<ComputerSystem>();
 
+            ComputerSystem computerSystem = new ComputerSystem
+            {
+                Caption = TryReadTextFromFile("/sys/class/dmi/id/product_name"),
+                Description = TryReadTextFromFile("/sys/class/dmi/id/product_family"),
+                IdentifyingNumber = TryReadTextFromFile("/sys/class/dmi/id/product_serial"),
+                Name = TryReadTextFromFile("/sys/class/dmi/id/product_name"),
+                SKUNumber = TryReadTextFromFile("/sys/class/dmi/id/product_sku"),
+                UUID = TryReadTextFromFile("/sys/class/dmi/id/product_uuid"),
+                Vendor = TryReadTextFromFile("/sys/class/dmi/id/sys_vendor"),
+                Version = TryReadTextFromFile("/sys/class/dmi/id/product_version")
+            };
+
+            computerSystemList.Add(computerSystem);
+
+            return computerSystemList;
+        }
+
+        private class Processor
+        {
+            public string ProcessorId = string.Empty;
+            public string VendorId = string.Empty;
+            public string ModelName = string.Empty;
+            public uint CpuMhz;
+            public uint CacheSize;
+            public uint PhysicalId;
+            public uint Siblings;
+            public uint CoreId;
+            public uint CpuCores;
+
+            public uint L1DataCacheSize;
+            public uint L1InstructionCacheSize;
+            public uint L2CacheSize;
+            public uint L3CacheSize;
+
+            public ulong PercentProcessorTime;
+        }
+
+        public List<CPU> GetCpuList(bool includePercentProcessorTime = true, int millisecondsDelayBetweenTwoMeasurements = 500, bool includePerformanceCounter = true)
+        {
             string[] lines = TryReadLinesFromFile("/proc/cpuinfo");
 
+            Regex processorRegex = new Regex(@"^processor\s+:\s+(\d+)"); // processor ID (from 0 to 7 in a PC with two quad core CPUs)
             Regex vendorIdRegex = new Regex(@"^vendor_id\s+:\s+(.+)");
             Regex modelNameRegex = new Regex(@"^model name\s+:\s+(.+)");
             Regex cpuSpeedRegex = new Regex(@"^cpu MHz\s+:\s+(.+)");
-            Regex cacheSizeRegex = new Regex(@"^cache size\s+:\s+(.+)\s+KB");
-            Regex physicalCoresRegex = new Regex(@"^cpu cores\s+:\s+(.+)");
-            Regex logicalCoresRegex = new Regex(@"^siblings\s+:\s+(.+)");
+            Regex cacheSizeRegex = new Regex(@"^cache size\s+:\s+(.+)\s+KB"); // L2 cache size in KB
+            Regex physicalIdRegex = new Regex(@"^physical id\s+:\s+(\d+)"); // physical CPU ID (a PC with two quad core CPUs, 4 cores will have one value, and the other 4 will have another value)
+            Regex logicalCoresRegex = new Regex(@"^siblings\s+:\s+(.+)"); // number of logical cores (no hyperthreading = same as physical, with hyperthreading = 2 * physical)
+            Regex coreIdRegex = new Regex(@"^core id\s+:\s+(.+)"); // core ID (from 0 to 3 in a PC with two quad core CPUs - for the first CPU, and then the same for second CPU)
+            Regex physicalCoresRegex = new Regex(@"^cpu cores\s+:\s+(.+)"); // number of cores (in a quad core CPU = 4)
 
-            CPU cpu = new CPU();
+            List<Processor> processorList = new List<Processor>();
+
+            Processor processor = null!;
 
             foreach (string line in lines)
             {
-                Match match = vendorIdRegex.Match(line);
+                Match match = processorRegex.Match(line);
                 if (match.Success && match.Groups.Count > 1)
                 {
-                    cpu.Manufacturer = match.Groups[1].Value.Trim();
+                    processor = new Processor();
+
+                    if (uint.TryParse(match.Groups[1].Value, out uint processorId))
+                    {
+                        processor.ProcessorId = $"cpu{processorId}";
+
+                        GetCpuCacheSize(processor);
+
+                        processorList.Add(processor);
+                    }
+                    continue;
+                }
+
+                if (processor == null)
+                {
+                    continue;
+                }
+
+                match = vendorIdRegex.Match(line);
+                if (match.Success && match.Groups.Count > 1)
+                {
+                    processor.VendorId = match.Groups[1].Value.Trim();
                     continue;
                 }
 
                 match = modelNameRegex.Match(line);
                 if (match.Success && match.Groups.Count > 1)
                 {
-                    cpu.Name = match.Groups[1].Value.Trim();
+                    processor.ModelName = match.Groups[1].Value.Trim();
                     continue;
                 }
 
@@ -181,7 +245,7 @@ namespace Hardware.Info.Linux
                 if (match.Success && match.Groups.Count > 1)
                 {
                     if (double.TryParse(match.Groups[1].Value, out double currentClockSpeed))
-                        cpu.CurrentClockSpeed = (uint)currentClockSpeed;
+                        processor.CpuMhz = (uint)currentClockSpeed;
                     continue;
                 }
 
@@ -189,15 +253,15 @@ namespace Hardware.Info.Linux
                 if (match.Success && match.Groups.Count > 1)
                 {
                     if (uint.TryParse(match.Groups[1].Value, out uint cacheSize))
-                        cpu.L3CacheSize = 1024 * cacheSize;
+                        processor.CacheSize = 1024 * cacheSize;
                     continue;
                 }
 
-                match = physicalCoresRegex.Match(line);
+                match = physicalIdRegex.Match(line);
                 if (match.Success && match.Groups.Count > 1)
                 {
-                    if (uint.TryParse(match.Groups[1].Value, out uint numberOfCores))
-                        cpu.NumberOfCores = numberOfCores;
+                    if (uint.TryParse(match.Groups[1].Value, out uint physicalId))
+                        processor.PhysicalId = physicalId;
                     continue;
                 }
 
@@ -205,16 +269,82 @@ namespace Hardware.Info.Linux
                 if (match.Success && match.Groups.Count > 1)
                 {
                     if (uint.TryParse(match.Groups[1].Value, out uint numberOfLogicalProcessors))
-                        cpu.NumberOfLogicalProcessors = numberOfLogicalProcessors;
+                        processor.Siblings = numberOfLogicalProcessors;
+                    continue;
+                }
+
+                match = coreIdRegex.Match(line);
+                if (match.Success && match.Groups.Count > 1)
+                {
+                    if (uint.TryParse(match.Groups[1].Value, out uint coreId))
+                        processor.CoreId = coreId;
+                    continue;
+                }
+
+                match = physicalCoresRegex.Match(line);
+                if (match.Success && match.Groups.Count > 1)
+                {
+                    if (uint.TryParse(match.Groups[1].Value, out uint numberOfCores))
+                        processor.CpuCores = numberOfCores;
                     continue;
                 }
             }
 
+            ulong percentProcessorTime = 0;
+
+            if (includePercentProcessorTime)
+            {
+                percentProcessorTime = GetCpuUsage(processorList, millisecondsDelayBetweenTwoMeasurements);
+            }
+
+            List<CPU> cpuList = new List<CPU>();
+
+            foreach (var group in processorList.GroupBy(processor => processor.PhysicalId))
+            {
+                Processor first = group.First();
+
+                CPU cpu = new CPU
+                {
+                    PercentProcessorTime = percentProcessorTime,
+                    ProcessorId = group.Key.ToString(),
+                    Manufacturer = first.VendorId,
+                    Name = first.ModelName,
+                    CurrentClockSpeed = first.CpuMhz,
+                    NumberOfLogicalProcessors = first.Siblings,
+                    NumberOfCores = first.CpuCores,
+                    L1DataCacheSize = first.L1DataCacheSize,
+                    L1InstructionCacheSize = first.L1InstructionCacheSize,
+                    L2CacheSize = first.L2CacheSize,
+                    L3CacheSize = first.L3CacheSize
+                };
+
+                if (cpu.L2CacheSize == 0)
+                    cpu.L2CacheSize = first.CacheSize;
+
+                foreach (Processor proc in group)
+                {
+                    CpuCore core = new CpuCore
+                    {
+                        Name = proc.ProcessorId,
+                        PercentProcessorTime = proc.PercentProcessorTime
+                    };
+
+                    cpu.CpuCoreList.Add(core);
+                }
+
+                cpuList.Add(cpu);
+            }
+
+            return cpuList;
+        }
+
+        private static void GetCpuCacheSize(Processor processor)
+        {
             for (int i = 0; i <= 3; i++)
             {
-                string level = TryReadTextFromFile($"/sys/devices/system/cpu/cpu0/cache/index{i}/level");
-                string type = TryReadTextFromFile($"/sys/devices/system/cpu/cpu0/cache/index{i}/type");
-                string size = TryReadTextFromFile($"/sys/devices/system/cpu/cpu0/cache/index{i}/size");
+                string level = TryReadTextFromFile($"/sys/devices/system/cpu/{processor.ProcessorId}/cache/index{i}/level");
+                string type = TryReadTextFromFile($"/sys/devices/system/cpu/{processor.ProcessorId}/cache/index{i}/type");
+                string size = TryReadTextFromFile($"/sys/devices/system/cpu/{processor.ProcessorId}/cache/index{i}/size");
 
                 if (uint.TryParse(size.TrimEnd('K'), out uint cacheSize))
                 {
@@ -223,31 +353,22 @@ namespace Hardware.Info.Linux
                     if (level == "1")
                     {
                         if (type == "Data")
-                            cpu.L1DataCacheSize = cacheSize;
+                            processor.L1DataCacheSize = cacheSize;
 
                         if (type == "Instruction")
-                            cpu.L1InstructionCacheSize = cacheSize;
+                            processor.L1InstructionCacheSize = cacheSize;
                     }
 
                     if (level == "2")
-                        cpu.L2CacheSize = cacheSize;
+                        processor.L2CacheSize = cacheSize;
 
                     if (level == "3")
-                        cpu.L3CacheSize = cacheSize;
+                        processor.L3CacheSize = cacheSize;
                 }
             }
-
-            if (includePercentProcessorTime)
-            {
-                GetCpuUsage(cpu);
-            }
-
-            cpuList.Add(cpu);
-
-            return cpuList;
         }
 
-        private static void GetCpuUsage(CPU cpu)
+        private static ulong GetCpuUsage(List<Processor> processorList, int millisecondsDelayBetweenTwoMeasurements)
         {
             // Column   Name    Description
             // 1        user    Time spent with normal processing in user mode.
@@ -260,49 +381,47 @@ namespace Hardware.Info.Linux
             // 8        steal   Time stolen by other operating systems running in a virtual environment.
             // 9        guest   Time spent for running a virtual CPU or guest OS under the control of the kernel.
 
-            // > cat /proc/stat 
+            // > cat /proc/stat
             // cpu 1279636934 73759586 192327563 12184330186 543227057 56603 68503253 0 0
             // cpu0 297522664 8968710 49227610 418508635 72446546 56602 24904144 0 0
             // cpu1 227756034 9239849 30760881 424439349 196694821 0 7517172 0 0
             // cpu2 86902920 6411506 12412331 769921453 17877927 0 4809331 0 0
-            // ... 
+            // ...
 
             string[] cpuUsageLineLast = TryReadLinesFromFile("/proc/stat");
-            Task.Delay(500).Wait();
+            Task.Delay(millisecondsDelayBetweenTwoMeasurements).Wait();
             string[] cpuUsageLineNow = TryReadLinesFromFile("/proc/stat");
+
+            ulong percentProcessorTime = 0;
 
             if (cpuUsageLineLast.Length > 0 && cpuUsageLineNow.Length > 0)
             {
-                cpu.PercentProcessorTime = GetCpuPercentage(cpuUsageLineLast[0], cpuUsageLineNow[0]);
+                percentProcessorTime = GetCpuPercentage(cpuUsageLineLast[0], cpuUsageLineNow[0]);
 
-                for (int i = 0; i < cpu.NumberOfLogicalProcessors; i++)
+                foreach (Processor processor in processorList)
                 {
-                    string? cpuStatLast = cpuUsageLineLast.FirstOrDefault(s => s.StartsWith($"cpu{i}"));
-                    string? cpuStatNow = cpuUsageLineNow.FirstOrDefault(s => s.StartsWith($"cpu{i}"));
+                    string? cpuStatLast = cpuUsageLineLast.FirstOrDefault(s => s.StartsWith(processor.ProcessorId));
+                    string? cpuStatNow = cpuUsageLineNow.FirstOrDefault(s => s.StartsWith(processor.ProcessorId));
 
                     if (!string.IsNullOrEmpty(cpuStatLast) && !string.IsNullOrEmpty(cpuStatNow))
                     {
-                        CpuCore core = new CpuCore
-                        {
-                            Name = i.ToString(),
-                            PercentProcessorTime = GetCpuPercentage(cpuStatLast, cpuStatNow)
-                        };
-
-                        cpu.CpuCoreList.Add(core);
+                        processor.PercentProcessorTime = GetCpuPercentage(cpuStatLast, cpuStatNow);
                     }
                 }
             }
+
+            return percentProcessorTime;
         }
 
         private static UInt64 GetCpuPercentage(string cpuStatLast, string cpuStatNow)
         {
             char[] charSeparators = new char[] { ' ' };
 
-            // Get all columns but skip the first (which is the "cpu" string) 
+            // Get all columns but skip the first (which is the "cpu" string)
             List<string> cpuSumLineNow = cpuStatNow.Split(charSeparators, StringSplitOptions.RemoveEmptyEntries).ToList();
             cpuSumLineNow.RemoveAt(0);
 
-            // Get all columns but skip the first (which is the "cpu" string) 
+            // Get all columns but skip the first (which is the "cpu" string)
             List<string> cpuSumLineLast = cpuStatLast.Split(charSeparators, StringSplitOptions.RemoveEmptyEntries).ToList();
             cpuSumLineLast.RemoveAt(0);
 
@@ -322,10 +441,15 @@ namespace Hardware.Info.Linux
                     cpuSumLast += cpuLast;
             }
 
-            // Get the delta between two reads 
+            // Get the delta between two reads
             ulong cpuDelta = cpuSumNow - cpuSumLast;
 
-            // Get the idle time Delta 
+            if (cpuDelta == 0)
+            {
+                return 0; // avoid System.DivideByZeroException: Attempted to divide by zero.
+            }
+
+            // Get the idle time Delta
             ulong cpuIdle = 0;
 
             if (cpuSumLineNow.Count > 3 && cpuSumLineLast.Count > 3)
@@ -336,7 +460,7 @@ namespace Hardware.Info.Linux
                 }
             }
 
-            // Calc percentage 
+            // Calc percentage
             ulong cpuUsed = cpuDelta - cpuIdle;
 
             return 100 * cpuUsed / cpuDelta;
@@ -344,7 +468,7 @@ namespace Hardware.Info.Linux
 
         public override List<Drive> GetDriveList()
         {
-            List<Drive> driveList = new List<Drive>();
+            List<Drive> driveList = base.GetDriveList();
 
             string processOutput = ReadProcessOutput("lshw", "-class disk");
 
@@ -356,19 +480,18 @@ namespace Hardware.Info.Linux
             {
                 string trimmed = line.Trim();
 
-                if (trimmed.StartsWith("*-"))
+                if (trimmed.StartsWith("*-cdrom") || trimmed.StartsWith("*-disk"))
                 {
-                    if (disk != null)
+                    if (driveList.Count > 0 && disk == null && trimmed.StartsWith("*-disk"))
                     {
+                        disk = driveList.First();
+                    }
+                    else
+                    {
+                        disk = new Drive();
                         driveList.Add(disk);
                     }
 
-                    disk = null;
-                }
-
-                if (trimmed.StartsWith("*-cdrom") || trimmed.StartsWith("*-disk"))
-                {
-                    disk = new Drive();
                     continue;
                 }
 
@@ -382,15 +505,54 @@ namespace Hardware.Info.Linux
                     {
                         disk.Manufacturer = trimmed.Replace("vendor:", string.Empty).Trim();
                     }
+                    else if (trimmed.StartsWith("description:"))
+                    {
+                        disk.Description = trimmed.Replace("description:", string.Empty).Trim();
+                    }
+                    else if (trimmed.StartsWith("version:"))
+                    {
+                        disk.FirmwareRevision = trimmed.Replace("version:", string.Empty).Trim();
+                    }
+                    else if (trimmed.StartsWith("logical name:"))
+                    {
+                        disk.Name = trimmed.Replace("logical name:", string.Empty).Trim();
+                    }
+                    else if (trimmed.StartsWith("serial:"))
+                    {
+                        disk.SerialNumber = trimmed.Replace("serial:", string.Empty).Trim();
+                    }
+                    else if (trimmed.StartsWith("size:"))
+                    {
+                        string size = trimmed.Replace("size:", string.Empty).Trim();
+                        disk.Size = ExtractSizeInBytes(size);
+                    }
                 }
             }
 
-            if (disk != null)
-            {
-                driveList.Add(disk);
-            }
-
             return driveList;
+
+            static ulong ExtractSizeInBytes(string input)
+            {
+                Regex regex = new Regex(@"(\d+)\s*(KB|MB|GB|TB)");
+                Match match = regex.Match(input);
+
+                if (match.Success)
+                {
+                    if (ulong.TryParse(match.Groups[1].Value, out ulong size))
+                    {
+                        return match.Groups[2].Value switch
+                        {
+                            "KB" => size * 1024UL,
+                            "MB" => size * 1024UL * 1024UL,
+                            "GB" => size * 1024UL * 1024UL * 1024UL,
+                            "TB" => size * 1024UL * 1024UL * 1024UL * 1024UL,
+                            _ => size,
+                        };
+                    }
+                }
+
+                return 0;
+            }
         }
 
         public List<Keyboard> GetKeyboardList()
@@ -429,7 +591,7 @@ namespace Hardware.Info.Linux
             P: Phys=LNXPWRBN/button/input0
             S: Sysfs=/devices/LNXSYSTM:00/LNXPWRBN:00/input/input0
             U: Uniq=
-            H: Handlers=kbd event0 
+            H: Handlers=kbd event0
             B: PROP=0
             B: EV=3
             B: KEY=10000000000000 0
@@ -439,7 +601,7 @@ namespace Hardware.Info.Linux
             P: Phys=LNXSLPBN/button/input0
             S: Sysfs=/devices/LNXSYSTM:00/LNXSLPBN:00/input/input1
             U: Uniq=
-            H: Handlers=kbd event1 
+            H: Handlers=kbd event1
             B: PROP=0
             B: EV=3
             B: KEY=4000 0 0
@@ -449,7 +611,7 @@ namespace Hardware.Info.Linux
             P: Phys=isa0060/serio0/input0
             S: Sysfs=/devices/platform/i8042/serio0/input/input2
             U: Uniq=
-            H: Handlers=sysrq kbd event2 leds 
+            H: Handlers=sysrq kbd event2 leds
             B: PROP=0
             B: EV=120013
             B: KEY=402000000 3803078f800d001 feffffdfffefffff fffffffffffffffe
@@ -461,7 +623,7 @@ namespace Hardware.Info.Linux
             P: Phys=LNXVIDEO/video/input0
             S: Sysfs=/devices/LNXSYSTM:00/LNXSYBUS:00/PNP0A03:00/LNXVIDEO:00/input/input5
             U: Uniq=
-            H: Handlers=kbd event3 
+            H: Handlers=kbd event3
             B: PROP=0
             B: EV=3
             B: KEY=3e000b00000000 0 0 0
@@ -471,7 +633,7 @@ namespace Hardware.Info.Linux
             P: Phys=isa0060/serio1/input0
             S: Sysfs=/devices/platform/i8042/serio1/input/input4
             U: Uniq=
-            H: Handlers=mouse0 event4 
+            H: Handlers=mouse0 event4
             B: PROP=1
             B: EV=7
             B: KEY=1f0000 0 0 0 0
@@ -482,7 +644,7 @@ namespace Hardware.Info.Linux
             P: Phys=
             S: Sysfs=/devices/pci0000:00/0000:00:04.0/input/input7
             U: Uniq=
-            H: Handlers=mouse2 event6 js1 
+            H: Handlers=mouse2 event6 js1
             B: PROP=0
             B: EV=b
             B: KEY=10000 0 0 0 0
@@ -493,7 +655,7 @@ namespace Hardware.Info.Linux
             P: Phys=usb-0000:00:06.0-1/input0
             S: Sysfs=/devices/pci0000:00/0000:00:06.0/usb2/2-1/2-1:1.0/0003:80EE:0021.0006/input/input12
             U: Uniq=
-            H: Handlers=mouse1 event5 js0 
+            H: Handlers=mouse1 event5 js0
             B: PROP=0
             B: EV=1f
             B: KEY=1f0000 0 0 0 0
@@ -660,7 +822,7 @@ namespace Hardware.Info.Linux
                     Caption = interfaceName,
                     Description = interfaceName,
                     Name = interfaceName,
-                    MACAddress = macAddress,
+                    MACAddress = macAddress.Replace(":", "").ToUpper(),
                     NetConnectionID = interfaceName,
                     ProductName = interfaceName,
                 };
@@ -753,25 +915,16 @@ namespace Hardware.Info.Linux
             return foundIp;
         }
 
-        public override List<NetworkAdapter> GetNetworkAdapterList(bool includeBytesPersec = true, bool includeNetworkAdapterConfiguration = true)
+        public override List<NetworkAdapter> GetNetworkAdapterList(bool includeBytesPersec = true, bool includeNetworkAdapterConfiguration = true, int millisecondsDelayBetweenTwoMeasurements = 1000)
         {
-            List<NetworkAdapter> networkAdapterList;
-
-            try
-            {
-                networkAdapterList = base.GetNetworkAdapterList(includeBytesPersec, includeNetworkAdapterConfiguration);
-            }
-            catch (NetworkInformationException)
-            {
-                networkAdapterList = GetNetworkAdapters();
-            }
+            List<NetworkAdapter> networkAdapterList = GetNetworkAdapters();
 
             if (includeBytesPersec)
             {
                 char[] charSeparators = new char[] { ' ' };
 
                 string[] procNetDevLast = TryReadLinesFromFile("/proc/net/dev");
-                Task.Delay(1000).Wait();
+                Task.Delay(millisecondsDelayBetweenTwoMeasurements).Wait();
                 string[] procNetDevNow = TryReadLinesFromFile("/proc/net/dev");
 
                 foreach (NetworkAdapter networkAdapter in networkAdapterList)
@@ -946,6 +1099,34 @@ namespace Hardware.Info.Linux
             uint currentVerticalResolution = 0;
             uint currentRefreshRate = 0;
 
+            // xrandr -q
+            /*
+            Screen 0: minimum 320 x 200, current 1280 x 800, maximum 4096 x 4096
+            VGA1 disconnected (normal left inverted right x axis y axis)
+            LVDS1 connected 1280x800+0+0 inverted X and Y axis (normal left inverted right x axis y axis) 261mm x 163mm
+               1280x800       59.8*+
+               1024x768       60.0
+               800x600        60.3     56.2
+               640x480        59.9
+            DVI1 disconnected (normal left inverted right x axis y axis)
+            TV1 disconnected (normal left inverted right x axis y axis)
+
+            Screen 0: minimum 320 x 200, current 1440 x 900, maximum 8192 x 8192
+            VGA-1 disconnected (normal left inverted right x axis y axis)
+            LVDS-1 connected 1440x900+0+0 (normal left inverted right x axis y axis) 304mm x 190mm
+               1440x900       60.1*+
+               1024x768       60.0
+               800x600        60.3
+               640x480        59.9
+
+            Screen 0: minimum 320 x 200, current 3200 x 1080, maximum 8192 x 8192
+            VGA-1 disconnected (normal left inverted right x axis y axis)
+            HDMI-1 connected primary 1920x1080+0+0 (normal left inverted right x axis y axis) 531mm x 299mm
+               1920x1080     59.93 +  60.00*   50.00    59.94
+               1920x1080i    60.00    50.00    59.94
+               1680x1050     59.88
+            /**/
+
             string processOutput = ReadProcessOutput("xrandr", "-q");
 
             string[] lines = processOutput.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries);
@@ -992,82 +1173,114 @@ namespace Hardware.Info.Linux
                 }
             }
 
-            // xrandr -q
-
+            // lspci -D
             /*
-            Screen 0: minimum 320 x 200, current 1280 x 800, maximum 4096 x 4096
-            VGA1 disconnected (normal left inverted right x axis y axis)
-            LVDS1 connected 1280x800+0+0 inverted X and Y axis (normal left inverted right x axis y axis) 261mm x 163mm
-               1280x800       59.8*+
-               1024x768       60.0
-               800x600        60.3     56.2
-               640x480        59.9
-            DVI1 disconnected (normal left inverted right x axis y axis)
-            TV1 disconnected (normal left inverted right x axis y axis)
-
-            Screen 0: minimum 320 x 200, current 1440 x 900, maximum 8192 x 8192
-            VGA-1 disconnected (normal left inverted right x axis y axis)
-            LVDS-1 connected 1440x900+0+0 (normal left inverted right x axis y axis) 304mm x 190mm
-               1440x900       60.1*+
-               1024x768       60.0
-               800x600        60.3
-               640x480        59.9
-
-            Screen 0: minimum 320 x 200, current 3200 x 1080, maximum 8192 x 8192
-            VGA-1 disconnected (normal left inverted right x axis y axis)
-            HDMI-1 connected primary 1920x1080+0+0 (normal left inverted right x axis y axis) 531mm x 299mm
-               1920x1080     59.93 +  60.00*   50.00    59.94  
-               1920x1080i    60.00    50.00    59.94  
-               1680x1050     59.88  
+            0000:00:00.0 Host bridge: Advanced Micro Devices, Inc. [AMD] Phoenix Root Complex
+            0000:00:00.2 IOMMU: Advanced Micro Devices, Inc. [AMD] Phoenix IOMMU
+            0000:00:01.0 Host bridge: Advanced Micro Devices, Inc. [AMD] Phoenix Dummy Host Bridge
+            0000:00:02.0 Host bridge: Advanced Micro Devices, Inc. [AMD] Phoenix Dummy Host Bridge
+            0000:00:02.2 PCI bridge: Advanced Micro Devices, Inc. [AMD] Phoenix GPP Bridge
+            0000:00:02.4 PCI bridge: Advanced Micro Devices, Inc. [AMD] Phoenix GPP Bridge
+            0000:00:03.0 Host bridge: Advanced Micro Devices, Inc. [AMD] Phoenix Dummy Host Bridge
+            0000:00:03.1 PCI bridge: Advanced Micro Devices, Inc. [AMD] Family 19h USB4/Thunderbolt PCIe tunnel
+            0000:00:04.0 Host bridge: Advanced Micro Devices, Inc. [AMD] Phoenix Dummy Host Bridge
+            0000:00:04.1 PCI bridge: Advanced Micro Devices, Inc. [AMD] Family 19h USB4/Thunderbolt PCIe tunnel
+            0000:00:08.0 Host bridge: Advanced Micro Devices, Inc. [AMD] Phoenix Dummy Host Bridge
+            0000:00:08.1 PCI bridge: Advanced Micro Devices, Inc. [AMD] Phoenix Internal GPP Bridge to Bus [C:A]
+            0000:00:08.2 PCI bridge: Advanced Micro Devices, Inc. [AMD] Phoenix Internal GPP Bridge to Bus [C:A]
+            0000:00:08.3 PCI bridge: Advanced Micro Devices, Inc. [AMD] Phoenix Internal GPP Bridge to Bus [C:A]
+            0000:00:14.0 SMBus: Advanced Micro Devices, Inc. [AMD] FCH SMBus Controller (rev 71)
+            0000:00:14.3 ISA bridge: Advanced Micro Devices, Inc. [AMD] FCH LPC Bridge (rev 51)
+            0000:00:18.0 Host bridge: Advanced Micro Devices, Inc. [AMD] Phoenix Data Fabric; Function 0
+            0000:00:18.1 Host bridge: Advanced Micro Devices, Inc. [AMD] Phoenix Data Fabric; Function 1
+            0000:00:18.2 Host bridge: Advanced Micro Devices, Inc. [AMD] Phoenix Data Fabric; Function 2
+            0000:00:18.3 Host bridge: Advanced Micro Devices, Inc. [AMD] Phoenix Data Fabric; Function 3
+            0000:00:18.4 Host bridge: Advanced Micro Devices, Inc. [AMD] Phoenix Data Fabric; Function 4
+            0000:00:18.5 Host bridge: Advanced Micro Devices, Inc. [AMD] Phoenix Data Fabric; Function 5
+            0000:00:18.6 Host bridge: Advanced Micro Devices, Inc. [AMD] Phoenix Data Fabric; Function 6
+            0000:00:18.7 Host bridge: Advanced Micro Devices, Inc. [AMD] Phoenix Data Fabric; Function 7
+            0000:01:00.0 Network controller: MEDIATEK Corp. MT7922 802.11ax PCI Express Wireless Network Adapter
+            0000:02:00.0 Non-Volatile memory controller: Sandisk Corp WD Black SN850X NVMe SSD (rev 01)
+            0000:c1:00.0 VGA compatible controller: Advanced Micro Devices, Inc. [AMD/ATI] Phoenix1 (rev c4)
+            0000:c1:00.1 Audio device: Advanced Micro Devices, Inc. [AMD/ATI] Radeon High Definition Audio Controller [Rembrandt/Strix]
+            0000:c1:00.2 Encryption controller: Advanced Micro Devices, Inc. [AMD] Phoenix CCP/PSP 3.0 Device
+            0000:c1:00.3 USB controller: Advanced Micro Devices, Inc. [AMD] Device 15b9
+            0000:c1:00.4 USB controller: Advanced Micro Devices, Inc. [AMD] Device 15ba
+            0000:c1:00.5 Multimedia controller: Advanced Micro Devices, Inc. [AMD] Audio Coprocessor (rev 63)
+            0000:c1:00.6 Audio device: Advanced Micro Devices, Inc. [AMD] Family 17h/19h/1ah HD Audio Controller
+            0000:c2:00.0 Non-Essential Instrumentation [1300]: Advanced Micro Devices, Inc. [AMD] Phoenix Dummy Function
+            0000:c2:00.1 Signal processing controller: Advanced Micro Devices, Inc. [AMD] AMD IPU Device
+            0000:c3:00.0 Non-Essential Instrumentation [1300]: Advanced Micro Devices, Inc. [AMD] Phoenix Dummy Function
+            0000:c3:00.3 USB controller: Advanced Micro Devices, Inc. [AMD] Device 15c0
+            0000:c3:00.4 USB controller: Advanced Micro Devices, Inc. [AMD] Device 15c1
+            0000:c3:00.5 USB controller: Advanced Micro Devices, Inc. [AMD] Pink Sardine USB4/Thunderbolt NHI controller #1
+            0000:c3:00.6 USB controller: Advanced Micro Devices, Inc. [AMD] Pink Sardine USB4/Thunderbolt NHI controller #2
             /**/
 
-            processOutput = ReadProcessOutput("lspci", string.Empty);
+            processOutput = ReadProcessOutput("lspci", "-D");
 
             lines = processOutput.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries);
 
-            foreach (string line in lines.Where(l => l.Contains("VGA compatible controller")))
+            foreach (string line in lines.Where(l => l.Contains("VGA compatible controller") || l.Contains("3D controller") || l.Contains("Display controller")))
             {
+                int spaceIdx = line.IndexOf(' ');
+                string busId = line.Substring(0, spaceIdx);
+
                 string[] split = line.Split(':');
+                if (split.Length < 4)
+                    continue;
 
-                if (split.Length > 2)
+                string relevant = split[3].Trim();
+                if (string.IsNullOrWhiteSpace(relevant))
+                    continue;
+
+                string vendor = string.Empty;
+                ulong vram = 0;
+
+                if (relevant.Contains("Intel"))
                 {
-                    string relevant = split[2].Trim();
+                    vendor = "Intel Corporation";
 
-                    if (!string.IsNullOrWhiteSpace(relevant))
-                    {
-                        string vendor = string.Empty;
-
-                        if (relevant.Contains("Intel"))
-                        {
-                            vendor = "Intel Corporation";
-                        }
-                        else if (relevant.Contains("AMD") || relevant.Contains("Advanced Micro Devices") || relevant.Contains("ATI"))
-                        {
-                            vendor = "Advanced Micro Devices, Inc.";
-                        }
-                        else if (relevant.ToUpperInvariant().Contains("NVIDIA"))
-                        {
-                            vendor = "NVIDIA Corporation";
-                        }
-
-                        string name = relevant.Replace("[AMD/ATI]", string.Empty);
-
-                        if (!string.IsNullOrEmpty(vendor))
-                            name = name.Replace(vendor, string.Empty);
-
-                        VideoController gpu = new VideoController
-                        {
-                            Description = relevant,
-                            Manufacturer = vendor,
-                            Name = name,
-                            CurrentHorizontalResolution = currentHorizontalResolution,
-                            CurrentVerticalResolution = currentVerticalResolution,
-                            CurrentRefreshRate = currentRefreshRate
-                        };
-
-                        videoControllerList.Add(gpu);
-                    }
+                    // TODO: Implement Intel GPU VRAM detection
+                    // The methodology here will likely have to be different for each of the i915, Xe, and Arc drivers
                 }
+                else if (relevant.Contains("AMD") || relevant.Contains("Advanced Micro Devices") || relevant.Contains("ATI"))
+                {
+                    vendor = "Advanced Micro Devices, Inc.";
+
+                    // Read the VRAM total as bytes from sysfs
+                    ulong vramTotal = TryReadLongFromFile($"/sys/bus/pci/devices/{busId}/mem_info_vram_total");
+                    ulong gttTotal = TryReadLongFromFile($"/sys/bus/pci/devices/{busId}/mem_info_gtt_total");
+                    vram = Math.Max(vramTotal, gttTotal);
+                }
+                else if (relevant.ToUpperInvariant().Contains("NVIDIA"))
+                {
+                    vendor = "NVIDIA Corporation";
+
+                    // TODO: Implement Nvidia GPU VRAM detection
+                    // This could potentially use NVML as a native library, or use the nvidia-smi CLI tool
+                    // (usually shipped with both the proprietary and open Nvidia drivers).
+                    // Sample command: nvidia-smi --query-gpu=memory.total --format=noheader,nounits
+                    // Nouveau would likely need different methodology.
+                }
+
+                string name = relevant.Replace("[AMD/ATI]", string.Empty);
+
+                if (!string.IsNullOrEmpty(vendor))
+                    name = name.Replace(vendor, string.Empty);
+
+                VideoController gpu = new VideoController
+                {
+                    Description = relevant,
+                    Manufacturer = vendor,
+                    Name = name,
+                    CurrentHorizontalResolution = currentHorizontalResolution,
+                    CurrentVerticalResolution = currentVerticalResolution,
+                    CurrentRefreshRate = currentRefreshRate,
+                    AdapterRAM = vram,
+                };
+
+                videoControllerList.Add(gpu);
             }
 
             return videoControllerList;
