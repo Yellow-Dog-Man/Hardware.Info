@@ -67,6 +67,21 @@ namespace Hardware.Info
             return 0;
         }
 
+        internal static ulong TryReadLongFromFile(params string[] possiblePaths)
+        {
+            foreach (string path in possiblePaths)
+            {
+                string text = TryReadTextFromFile(path);
+
+                if (ulong.TryParse(text, out ulong integer))
+                {
+                    return integer;
+                }
+            }
+
+            return 0;
+        }
+
         internal static string[] TryReadLinesFromFile(string path)
         {
             try

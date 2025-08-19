@@ -1248,14 +1248,10 @@ namespace Hardware.Info.Linux
                 {
                     vendor = "Advanced Micro Devices, Inc.";
 
-                    // Read the VRAM total as bytes from sysfs, ignoring failures
-                    try
-                    {
-                        ulong vramTotal = ulong.Parse(File.ReadAllText($"/sys/bus/pci/devices/{busId}/mem_info_vram_total"));
-                        ulong gttTotal = ulong.Parse(File.ReadAllText($"/sys/bus/pci/devices/{busId}/mem_info_gtt_total"));
-                        vram = Math.Max(vramTotal, gttTotal);
-                    }
-                    catch { }
+                    // Read the VRAM total as bytes from sysfs
+                    ulong vramTotal = TryReadLongFromFile($"/sys/bus/pci/devices/{busId}/mem_info_vram_total");
+                    ulong gttTotal = TryReadLongFromFile($"/sys/bus/pci/devices/{busId}/mem_info_gtt_total");
+                    vram = Math.Max(vramTotal, gttTotal);
                 }
                 else if (relevant.ToUpperInvariant().Contains("NVIDIA"))
                 {
