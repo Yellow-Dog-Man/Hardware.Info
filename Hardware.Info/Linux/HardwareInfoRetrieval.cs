@@ -1248,10 +1248,11 @@ namespace Hardware.Info.Linux
                 {
                     vendor = "Advanced Micro Devices, Inc.";
 
-                    // Read the VRAM total as bytes from sysfs
+                    // Read the VRAM total as bytes from sysfs. If there's 1.5GB of VRAM or less, we assume that
+                    // the GPU is an APU/integrated graphics, so we should consider the GTT as part of the VRAM.
                     ulong vramTotal = TryReadLongFromFile($"/sys/bus/pci/devices/{busId}/mem_info_vram_total");
                     ulong gttTotal = TryReadLongFromFile($"/sys/bus/pci/devices/{busId}/mem_info_gtt_total");
-                    vram = Math.Max(vramTotal, gttTotal);
+                    vram = vramTotal <= 1.5D * 1024L * 1024L * 1024L ? vramTotal + gttTotal : vramTotal;
                 }
                 else if (relevant.ToUpperInvariant().Contains("NVIDIA"))
                 {
