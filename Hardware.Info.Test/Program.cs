@@ -35,7 +35,13 @@ namespace Hardware.Info.Test
 
             //hardwareInfo.RefreshAll();
 
-            Console.WriteLine(hardwareInfo.OperatingSystem);
+            // OS info — printed explicitly to verify fallback paths (WMI → Registry → RtlGetVersion)
+            // See: https://github.com/Yellow-Dog-Man/Resonite-Issues/issues/6363
+            Console.WriteLine("=== Operating System ===");
+            Console.WriteLine($"Name:          {hardwareInfo.OperatingSystem.Name}");
+            Console.WriteLine($"Version:       {hardwareInfo.OperatingSystem.Version}");
+            Console.WriteLine($"VersionString: {hardwareInfo.OperatingSystem.VersionString}");
+            Console.WriteLine();
 
             Console.WriteLine(hardwareInfo.MemoryStatus);
 

@@ -7,6 +7,7 @@ using System.Net;
 using System.Runtime.InteropServices;
 using System.Security;
 using System.Text;
+using Microsoft.Win32;
 
 // https://docs.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-osversioninfoexa
 
@@ -91,16 +92,55 @@ namespace Hardware.Info.Windows
 
         public void GetOs()
         {
-            string queryString = "SELECT Caption, Version FROM Win32_OperatingSystem";
-            using ManagementObjectSearcher mos = new ManagementObjectSearcher(_managementScope, queryString, _enumerationOptions);
-
-            foreach (ManagementBaseObject mo in mos.Get())
+            try
             {
-                _os.Name = GetPropertyString(mo["Caption"]);
-                _os.VersionString = GetPropertyString(mo["Version"]);
+                string queryString = "SELECT Caption, Version FROM Win32_OperatingSystem";
+                using ManagementObjectSearcher mos = new ManagementObjectSearcher(_managementScope, queryString, _enumerationOptions);
 
-                if (Version.TryParse(_os.VersionString, out Version version))
-                    _os.Version = version;
+                foreach (ManagementBaseObject mo in mos.Get())
+                {
+                    _os.Name = GetPropertyString(mo["Caption"]);
+                    _os.VersionString = GetPropertyString(mo["Version"]);
+
+                    if (Version.TryParse(_os.VersionString, out Version version))
+                        _os.Version = version;
+                }
+            }
+            catch (ManagementException)
+            {
+                // WMI may be unavailable or corrupted on stripped-down Windows installs (e.g. LTSC, IoT).
+                // See: https://github.com/Yellow-Dog-Man/Resonite-Issues/issues/6363
+                // Fall back to the registry which always has the full product name and build info.
+                try
+                {
+                    using RegistryKey? key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
+                    if (key != null)
+                    {
+                        // ProductName: e.g. "Windows 10 Enterprise LTSC"
+                        // DisplayVersion: e.g. "21H2" (present on 20H1+, absent on older/LTSC)
+                        string productName = key.GetValue("ProductName") as string ?? string.Empty;
+                        string displayVersion = key.GetValue("DisplayVersion") as string ?? string.Empty;
+
+                        _os.Name = !string.IsNullOrEmpty(displayVersion)
+                            ? $"{productName} {displayVersion}"  // e.g. "Windows 10 Enterprise LTSC 21H2"
+                            : productName;
+
+                        // CurrentBuild + UBR give us the full 4-part patch version alongside RtlGetVersion major.minor.
+                        string currentBuild = key.GetValue("CurrentBuild") as string ?? string.Empty;
+                        int ubr = key.GetValue("UBR") is int u ? u : 0;
+
+                        Version? rtl = GetOsVersionByRtlGetVersion();
+                        if (rtl != null && int.TryParse(currentBuild, out int build))
+                        {
+                            _os.Version = new Version(rtl.Major, rtl.Minor, build, ubr);
+                            _os.VersionString = _os.Version.ToString();
+                        }
+                    }
+                }
+                catch (Exception)
+                {
+                    // Registry also unavailable — final fallback via RtlGetVersion below.
+                }
             }
 
             if (string.IsNullOrEmpty(_os.Name))
