@@ -23,6 +23,8 @@ jobs:
       run: dotnet build --configuration Release --no-restore -p:Version=${{ env.VERSION }}
     - name: Test with the dotnet CLI
       run: dotnet test
+    - name: Pack Core
+      run: dotnet pack Hardware.Info.Core --output nupkgs --configuration Release -p:Version=${{ env.VERSION }}
     - name: Pack
       run: dotnet pack Hardware.Info --output nupkgs --configuration Release -p:Version=${{ env.VERSION }}
     - name: Nuget Publish
